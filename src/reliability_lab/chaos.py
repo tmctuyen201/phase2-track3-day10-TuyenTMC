@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import random
 from pathlib import Path
@@ -60,7 +59,7 @@ def calculate_recovery_time_ms(gateway: ReliabilityGateway) -> float | None:
         open_ts: float | None = None
         for entry in breaker.transition_log:
             if entry["to"] == "open" and open_ts is None:
-                open_ts = entry["ts"]
+                open_ts = float(entry["ts"])
             elif entry["to"] == "closed" and open_ts is not None:
                 recovery_times.append((float(entry["ts"]) - open_ts) * 1000)
                 open_ts = None
@@ -82,7 +81,7 @@ def run_scenario(config: LabConfig, queries: list[str], scenario: ScenarioConfig
         if result.cache_hit:
             metrics.cache_hits += 1
             metrics.estimated_cost_saved += 0.001
-        if result.route == "fallback":
+        if result.route.startswith("fallback:"):
             metrics.fallback_successes += 1
             metrics.successful_requests += 1
         elif result.route == "static_fallback":
@@ -100,12 +99,22 @@ def run_scenario(config: LabConfig, queries: list[str], scenario: ScenarioConfig
     return metrics
 
 
-def run_simulation(config: LabConfig, queries: list[str]) -> RunMetrics:
-    """Run all named scenarios from config, or a default run if none defined.
+def _evaluate_scenario(scenario_name: str, result: RunMetrics) -> str:
+    """Define pass/fail criteria per scenario."""
+    if scenario_name == "primary_timeout_100":
+        fallback_rate = result.fallback_success_rate
+        return "pass" if fallback_rate >= 0.9 else "fail"
+    if scenario_name == "primary_flaky_50":
+        return "pass" if result.successful_requests > (result.total_requests * 0.5) else "fail"
+    if scenario_name == "all_healthy":
+        return "pass" if result.availability >= 0.95 else "fail"
+    if scenario_name == "cache_stale_candidate":
+        return "pass" if result.successful_requests > 0 else "fail"
+    return "pass" if result.successful_requests > 0 else "fail"
 
-    TODO(student): Add a cache vs no-cache comparison scenario.
-    Extend with your own custom scenarios (e.g., cost cap near limit).
-    """
+
+def run_simulation(config: LabConfig, queries: list[str]) -> RunMetrics:
+    """Run all named scenarios from config, or a default run if none defined."""
     if not config.scenarios:
         default_scenario = ScenarioConfig(name="default", description="baseline run")
         metrics = run_scenario(config, queries, default_scenario)
@@ -116,10 +125,8 @@ def run_simulation(config: LabConfig, queries: list[str]) -> RunMetrics:
     for scenario in config.scenarios:
         result = run_scenario(config, queries, scenario)
 
-        # TODO(student): Define pass/fail criteria per scenario.
-        # Example: primary_timeout_100 passes if fallback_success_rate > 0.9
-        passed = result.successful_requests > 0
-        combined.scenarios[scenario.name] = "pass" if passed else "fail"
+        passed = _evaluate_scenario(scenario.name, result)
+        combined.scenarios[scenario.name] = passed
 
         combined.total_requests += result.total_requests
         combined.successful_requests += result.successful_requests
